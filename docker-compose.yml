@@ -1,0 +1,19 @@
+services:
+  todo:
+    build:
+      context: .
+    image: todoapp:latest
+    container_name: todoapp
+    environment:
+      - PORT=8080
+      - DATABASE_PATH=/app/data/app.db
+    ports:
+      - "8080:8080"
+    volumes:
+      - todo-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  todo-data:
+
+
