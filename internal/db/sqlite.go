@@ -96,6 +96,7 @@ func (s *Store) ListTodos(ctx context.Context) ([]Todo, error) {
 	var out []Todo
 	for rows.Next() {
 		var t Todo
+		
 		var created, updated string
 		var completedInt int
 		if err := rows.Scan(&t.ID, &t.Title, &completedInt, &created, &updated); err != nil {
@@ -141,6 +142,8 @@ func (s *Store) CreateTodo(ctx context.Context, title string) (Todo, error) {
 	if err != nil {
 		return Todo{}, err
 	}
+	// Log creation
+	slog.Info("todo.created", "id", id, "title", title)
 	return Todo{
 		ID:        id,
 		Title:     title,
@@ -171,13 +174,27 @@ func (s *Store) UpdateTodo(ctx context.Context, id int64, title string, complete
 	if err != nil {
 		return Todo{}, err
 	}
-	return s.GetTodo(ctx, id)
+	updated, err := s.GetTodo(ctx, id)
+	if err == nil {
+		slog.Info("todo.updated", "id", updated.ID, "title", updated.Title, "completed", updated.Completed)
+	}
+	return updated, err
 }
 
 // DeleteTodo deletes a todo by id.
 func (s *Store) DeleteTodo(ctx context.Context, id int64) error {
-	_, err := s.SQL.ExecContext(ctx, `DELETE FROM todos WHERE id = ?`, id)
-	return err
+	res, err := s.SQL.ExecContext(ctx, `DELETE FROM todos WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil {
+		if n > 0 {
+			slog.Info("todo.deleted", "id", id, "rows", n)
+		} else {
+			slog.Warn("todo.delete.miss", "id", id)
+		}
+	}
+	return nil
 }
 
 // GetTodo returns a todo by id.
