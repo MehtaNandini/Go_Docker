@@ -6,11 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // Store wraps the SQL DB and exposes operations for todos.
@@ -18,27 +16,26 @@ type Store struct {
 	SQL *sql.DB
 }
 
-// NewStore opens (or creates) the SQLite database at the given path and runs migrations.
-func NewStore(dbPath string) (*Store, error) {
-	if dbPath == "" {
-		return nil, errors.New("db path must not be empty")
+// NewStore opens a PostgreSQL connection using the provided DSN and runs migrations.
+// Example DSN: postgres://user:pass@host:5432/dbname?sslmode=disable
+func NewStore(dsn string) (*Store, error) {
+	if dsn == "" {
+		return nil, errors.New("database dsn must not be empty")
 	}
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		return nil, fmt.Errorf("create data dir: %w", err)
-	}
-
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite: %w", err)
+		return nil, fmt.Errorf("open postgres: %w", err)
 	}
-	// Busy timeout to reduce lock contention errors
-	if _, err := db.Exec("PRAGMA busy_timeout = 5000;"); err != nil {
+	// Reasonable defaults for local dev
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(30 * time.Minute)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("set busy_timeout: %w", err)
-	}
-	// WAL mode for better concurrency
-	if _, err := db.Exec("PRAGMA journal_mode = WAL;"); err != nil {
-		slog.Warn("failed to enable WAL mode", "error", err)
+		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 
 	store := &Store{SQL: db}
@@ -60,11 +57,11 @@ func (s *Store) Close() error {
 func (s *Store) migrate() error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS todos (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			id BIGSERIAL PRIMARY KEY,
 			title TEXT NOT NULL,
-			completed INTEGER NOT NULL DEFAULT 0,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
+			completed BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_todos_completed ON todos(completed);`,
 	}
@@ -96,23 +93,9 @@ func (s *Store) ListTodos(ctx context.Context) ([]Todo, error) {
 	var out []Todo
 	for rows.Next() {
 		var t Todo
-		
-		var created, updated string
-		var completedInt int
-		if err := rows.Scan(&t.ID, &t.Title, &completedInt, &created, &updated); err != nil {
+		if err := rows.Scan(&t.ID, &t.Title, &t.Completed, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, err
 		}
-		t.Completed = completedInt == 1
-		ct, err := time.Parse(time.RFC3339Nano, created)
-		if err != nil {
-			return nil, err
-		}
-		ut, err := time.Parse(time.RFC3339Nano, updated)
-		if err != nil {
-			return nil, err
-		}
-		t.CreatedAt = ct
-		t.UpdatedAt = ut
 		out = append(out, t)
 	}
 	if out == nil {
@@ -130,27 +113,17 @@ func (s *Store) CreateTodo(ctx context.Context, title string) (Todo, error) {
 		return Todo{}, errors.New("title too long")
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	res, err := s.SQL.ExecContext(ctx,
-		`INSERT INTO todos (title, completed, created_at, updated_at) VALUES (?, 0, ?, ?)`,
-		title, now, now,
-	)
+	var t Todo
+	err := s.SQL.QueryRowContext(ctx,
+		`INSERT INTO todos (title, completed) VALUES ($1, FALSE)
+		 RETURNING id, title, completed, created_at, updated_at`,
+		title,
+	).Scan(&t.ID, &t.Title, &t.Completed, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return Todo{}, err
 	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return Todo{}, err
-	}
-	// Log creation
-	slog.Info("todo.created", "id", id, "title", title)
-	return Todo{
-		ID:        id,
-		Title:     title,
-		Completed: false,
-		CreatedAt: mustParseRFC3339Nano(now),
-		UpdatedAt: mustParseRFC3339Nano(now),
-	}, nil
+	slog.Info("todo.created", "id", t.ID, "title", t.Title)
+	return t, nil
 }
 
 // UpdateTodo updates title and completed fields for a todo by id.
@@ -162,28 +135,24 @@ func (s *Store) UpdateTodo(ctx context.Context, id int64, title string, complete
 		return Todo{}, errors.New("title too long")
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	completedInt := 0
-	if completed {
-		completedInt = 1
-	}
-	_, err := s.SQL.ExecContext(ctx,
-		`UPDATE todos SET title = ?, completed = ?, updated_at = ? WHERE id = ?`,
-		title, completedInt, now, id,
-	)
+	var t Todo
+	err := s.SQL.QueryRowContext(ctx,
+		`UPDATE todos
+		 SET title = $1, completed = $2, updated_at = NOW()
+		 WHERE id = $3
+		 RETURNING id, title, completed, created_at, updated_at`,
+		title, completed, id,
+	).Scan(&t.ID, &t.Title, &t.Completed, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return Todo{}, err
 	}
-	updated, err := s.GetTodo(ctx, id)
-	if err == nil {
-		slog.Info("todo.updated", "id", updated.ID, "title", updated.Title, "completed", updated.Completed)
-	}
-	return updated, err
+	slog.Info("todo.updated", "id", t.ID, "title", t.Title, "completed", t.Completed)
+	return t, nil
 }
 
 // DeleteTodo deletes a todo by id.
 func (s *Store) DeleteTodo(ctx context.Context, id int64) error {
-	res, err := s.SQL.ExecContext(ctx, `DELETE FROM todos WHERE id = ?`, id)
+	res, err := s.SQL.ExecContext(ctx, `DELETE FROM todos WHERE id = $1`, id)
 	if err != nil {
 		return err
 	}
@@ -200,37 +169,14 @@ func (s *Store) DeleteTodo(ctx context.Context, id int64) error {
 // GetTodo returns a todo by id.
 func (s *Store) GetTodo(ctx context.Context, id int64) (Todo, error) {
 	var t Todo
-	var created, updated string
-	var completedInt int
 	row := s.SQL.QueryRowContext(ctx,
-		`SELECT id, title, completed, created_at, updated_at FROM todos WHERE id = ?`, id,
+		`SELECT id, title, completed, created_at, updated_at FROM todos WHERE id = $1`, id,
 	)
-	if err := row.Scan(&t.ID, &t.Title, &completedInt, &created, &updated); err != nil {
+	if err := row.Scan(&t.ID, &t.Title, &t.Completed, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Todo{}, sql.ErrNoRows
 		}
 		return Todo{}, err
 	}
-	t.Completed = completedInt == 1
-	ct, err := time.Parse(time.RFC3339Nano, created)
-	if err != nil {
-		return Todo{}, err
-	}
-	ut, err := time.Parse(time.RFC3339Nano, updated)
-	if err != nil {
-		return Todo{}, err
-	}
-	t.CreatedAt = ct
-	t.UpdatedAt = ut
 	return t, nil
 }
-
-func mustParseRFC3339Nano(v string) time.Time {
-	t, err := time.Parse(time.RFC3339Nano, v)
-	if err != nil {
-		panic(err)
-	}
-	return t
-}
-
-
