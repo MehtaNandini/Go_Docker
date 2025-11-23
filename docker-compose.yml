@@ -24,6 +24,16 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     restart: unless-stopped
+  ml:
+    build:
+      context: ./ml_service
+    image: todo-ml:latest
+    container_name: todo-ml
+    environment:
+      - PORT=8081
+    ports:
+      - "8081:8081"
+    restart: unless-stopped
 
 volumes:
   pgdata:
