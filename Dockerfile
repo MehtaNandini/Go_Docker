@@ -16,7 +16,7 @@ COPY . .
 RUN go mod tidy
 
 # Build static binary where possible
-ENV CGO_ENABLED=1
+ENV CGO_ENABLED=0
 RUN go build -trimpath -ldflags "-s -w" -o /out/todo ./cmd/server
 
 FROM alpine:3.20
@@ -28,10 +28,6 @@ COPY --from=build /out/todo /app/todo
 
 ENV PORT=8080
 EXPOSE 8080
-
-# Create data dir for sqlite database
-RUN mkdir -p /app/data
-VOLUME ["/app/data"]
 
 ENTRYPOINT ["/app/todo"]
 

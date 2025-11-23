@@ -22,9 +22,9 @@ func main() {
 	slog.SetDefault(logger)
 
 	port := getEnv("PORT", "8080")
-	dbPath := getEnv("DATABASE_PATH", "data/app.db")
+	dsn := getEnv("DATABASE_URL", "postgres://todo:todo@postgres:5432/tododb?sslmode=disable")
 
-	store, err := db.NewStore(dbPath)
+	store, err := db.NewStore(dsn)
 	if err != nil {
 		logger.Error("failed to initialize database", "error", err)
 		os.Exit(1)

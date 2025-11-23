@@ -6,14 +6,26 @@ services:
     container_name: todoapp
     environment:
       - PORT=8080
-      - DATABASE_PATH=/app/data/app.db
+      - DATABASE_URL=postgres://todo:todo@postgres:5432/tododb?sslmode=disable
     ports:
       - "8080:8080"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+  postgres:
+    image: postgres:16-alpine
+    container_name: todo-postgres
+    environment:
+      - POSTGRES_USER=todo
+      - POSTGRES_PASSWORD=todo
+      - POSTGRES_DB=tododb
+    ports:
+      - "5432:5432"
     volumes:
-      - todo-data:/app/data
+      - pgdata:/var/lib/postgresql/data
     restart: unless-stopped
 
 volumes:
-  todo-data:
+  pgdata:
 
 
