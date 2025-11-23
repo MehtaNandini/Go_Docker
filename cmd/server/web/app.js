@@ -42,12 +42,26 @@ function renderTodo(todo) {
   const li = el('li', { className: 'item' })
   const checkbox = el('input', { type: 'checkbox' })
   checkbox.checked = !!todo.completed
-  const text = el('input', { type: 'text', value: todo.title, maxlength: '200' })
+  const text = el('input', { type: 'text', value: todo.title, maxlength: '200', className: 'main-input' })
+  const tagsInput = el('input', { type: 'text', value: formatTags(todo.tags), placeholder: 'tags', className: 'tags-input' })
+  const durationInput = el('input', {
+    type: 'number',
+    min: '0',
+    max: '1440',
+    value: String(todo.durationMinutes ?? 0),
+    className: 'duration-input'
+  })
   const saveBtn = el('button', { className: 'save' }, 'Save')
   const delBtn = el('button', { className: 'delete' }, 'Delete')
+  const priority = el('span', { className: 'priority-pill' }, `Priority ${formatPriority(todo.priorityScore)}`)
 
   saveBtn.addEventListener('click', async () => {
-    const payload = { title: text.value.trim(), completed: checkbox.checked }
+    const payload = {
+      title: text.value.trim(),
+      completed: checkbox.checked,
+      tags: parseTags(tagsInput.value),
+      durationMinutes: parseDuration(durationInput.value)
+    }
     const updated = await fetchJSON(`/api/todos/${todo.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -70,6 +84,9 @@ function renderTodo(todo) {
 
   li.appendChild(checkbox)
   li.appendChild(text)
+  li.appendChild(tagsInput)
+  li.appendChild(durationInput)
+  li.appendChild(priority)
   li.appendChild(saveBtn)
   li.appendChild(delBtn)
   return li
@@ -78,18 +95,52 @@ function renderTodo(todo) {
 document.getElementById('new-form').addEventListener('submit', async (e) => {
   e.preventDefault()
   const input = document.getElementById('title')
+  const tagsInput = document.getElementById('tags')
+  const durationInput = document.getElementById('duration')
   const title = input.value.trim()
   if (!title) return
   const todo = await fetchJSON('/api/todos/', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title })
+    body: JSON.stringify({
+      title,
+      tags: parseTags(tagsInput.value),
+      durationMinutes: parseDuration(durationInput.value)
+    })
   })
   const list = document.getElementById('list')
   list.appendChild(renderTodo(todo))
   input.value = ''
+  tagsInput.value = ''
+  durationInput.value = ''
   input.focus()
 })
+
+function parseTags(value) {
+  if (!value) return []
+  return value
+    .split(',')
+    .map(t => t.trim().toLowerCase())
+    .filter(Boolean)
+    .slice(0, 10)
+}
+
+function formatTags(tags) {
+  if (!Array.isArray(tags) || tags.length === 0) return ''
+  return tags.join(', ')
+}
+
+function parseDuration(value) {
+  const num = Number(value)
+  if (Number.isNaN(num) || num < 0) return 0
+  if (num > 1440) return 1440
+  return Math.round(num)
+}
+
+function formatPriority(score) {
+  const val = typeof score === 'number' ? score : 0
+  return val.toFixed(2)
+}
 
 loadTodos().catch(err => {
   console.error(err)

@@ -9,8 +9,10 @@
   <body>
     <main class="container">
       <h1>Todo</h1>
-      <form id="new-form" autocomplete="off">
+      <form id="new-form" class="form-grid" autocomplete="off">
         <input id="title" name="title" type="text" maxlength="200" placeholder="What needs to be done?" required>
+        <input id="tags" name="tags" type="text" maxlength="200" placeholder="Tags (comma separated)">
+        <input id="duration" name="duration" type="number" min="0" max="1440" placeholder="Duration (minutes)">
         <button type="submit">Add</button>
       </form>
       <ul id="list" class="list"></ul>
