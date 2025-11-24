@@ -3,3 +3,8 @@ mlruns/
 ml_training/tmp_artifacts/
 *.pyc
 __pycache__/
+
+# Airflow
+airflow/logs/
+airflow/__pycache__/
+.airflow_db_initialized
