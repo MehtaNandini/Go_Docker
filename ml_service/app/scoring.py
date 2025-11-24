@@ -29,6 +29,7 @@ class TodoFeatures:
     created_at: datetime | None = None
     due_date: datetime | None = None
     tags: Iterable[str] = field(default_factory=tuple)
+    duration_minutes: int = 0
 
 
 def priority_score(features: TodoFeatures) -> float:
@@ -38,6 +39,7 @@ def priority_score(features: TodoFeatures) -> float:
     score += _tag_bonus(features.tags)
     score += _age_bonus(_normalize_dt(features.created_at))
     score += _due_date_bonus(_normalize_dt(features.due_date))
+    score += _duration_bonus(features.duration_minutes)
 
     if features.completed:
         score -= 0.6
@@ -92,6 +94,20 @@ def _due_date_bonus(due_date: datetime | None) -> float:
     if delta_hours <= 24 * 7:
         return 0.1
     return 0.05
+
+
+def _duration_bonus(minutes: int) -> float:
+    if minutes <= 0:
+        return 0.05
+    if minutes <= 30:
+        return 0.08
+    if minutes <= 60:
+        return 0.04
+    if minutes <= 180:
+        return 0.0
+    if minutes <= 480:
+        return -0.05
+    return -0.12
 
 
 def _normalize_dt(value: datetime | None) -> datetime | None:

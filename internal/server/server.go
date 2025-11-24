@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"embed"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -15,18 +17,24 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"todoapp/internal/db"
+	"todoapp/internal/mlclient"
 )
 
 // We declare a dummy variable to ensure the embed package is retained in builds even if not used directly elsewhere in this file.
 var _ embed.FS
 
 type Server struct {
-	store   *db.Store
-	static  fs.FS
+	store  *db.Store
+	static fs.FS
+	scorer priorityScorer
 }
 
-func NewServer(store *db.Store, staticFS fs.FS) *Server {
-	return &Server{store: store, static: staticFS}
+type priorityScorer interface {
+	Score(ctx context.Context, todo mlclient.TodoPayload) (float64, error)
+}
+
+func NewServer(store *db.Store, staticFS fs.FS, scorer priorityScorer) *Server {
+	return &Server{store: store, static: staticFS, scorer: scorer}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -107,7 +115,9 @@ func (s *Server) handleListTodos(w http.ResponseWriter, r *http.Request) {
 }
 
 type createTodoRequest struct {
-	Title string `json:"title"`
+	Title           string   `json:"title"`
+	Tags            []string `json:"tags"`
+	DurationMinutes int      `json:"durationMinutes"`
 }
 
 func (s *Server) handleCreateTodo(w http.ResponseWriter, r *http.Request) {
@@ -122,7 +132,24 @@ func (s *Server) handleCreateTodo(w http.ResponseWriter, r *http.Request) {
 	req.Title = strings.TrimSpace(req.Title)
 	ctx, cancel := contextWithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	item, err := s.store.CreateTodo(ctx, req.Title)
+
+	tags := normalizeTags(req.Tags)
+	duration := clampDuration(req.DurationMinutes)
+	priority := s.computePriority(ctx, priorityCandidate{
+		Title:           req.Title,
+		Completed:       false,
+		Tags:            tags,
+		DurationMinutes: duration,
+		CreatedAt:       time.Now().UTC(),
+	}, 0)
+
+	item, err := s.store.CreateTodo(ctx, db.SaveTodoInput{
+		Title:           req.Title,
+		Completed:       false,
+		Tags:            tags,
+		DurationMinutes: duration,
+		PriorityScore:   priority,
+	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -131,8 +158,10 @@ func (s *Server) handleCreateTodo(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateTodoRequest struct {
-	Title     string `json:"title"`
-	Completed bool   `json:"completed"`
+	Title           string   `json:"title"`
+	Completed       bool     `json:"completed"`
+	Tags            []string `json:"tags"`
+	DurationMinutes int      `json:"durationMinutes"`
 }
 
 func (s *Server) handleUpdateTodo(w http.ResponseWriter, r *http.Request) {
@@ -151,7 +180,36 @@ func (s *Server) handleUpdateTodo(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := contextWithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	item, err := s.store.UpdateTodo(ctx, id, strings.TrimSpace(req.Title), req.Completed)
+
+	existing, err := s.store.GetTodo(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "todo not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load todo")
+		return
+	}
+
+	title := strings.TrimSpace(req.Title)
+	tags := normalizeTags(req.Tags)
+	duration := clampDuration(req.DurationMinutes)
+
+	priority := s.computePriority(ctx, priorityCandidate{
+		Title:           title,
+		Completed:       req.Completed,
+		Tags:            tags,
+		DurationMinutes: duration,
+		CreatedAt:       existing.CreatedAt,
+	}, existing.PriorityScore)
+
+	item, err := s.store.UpdateTodo(ctx, id, db.SaveTodoInput{
+		Title:           title,
+		Completed:       req.Completed,
+		Tags:            tags,
+		DurationMinutes: duration,
+		PriorityScore:   priority,
+	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -192,4 +250,65 @@ func contextWithTimeout(parentCtx context.Context, d time.Duration) (context.Con
 	return context.WithTimeout(parentCtx, d)
 }
 
+type priorityCandidate struct {
+	Title           string
+	Completed       bool
+	Tags            []string
+	DurationMinutes int
+	CreatedAt       time.Time
+}
 
+func (s *Server) computePriority(ctx context.Context, candidate priorityCandidate, fallback float64) float64 {
+	if s.scorer == nil {
+		return fallback
+	}
+	payload := mlclient.TodoPayload{
+		Title:           candidate.Title,
+		Completed:       candidate.Completed,
+		Tags:            candidate.Tags,
+		DurationMinutes: candidate.DurationMinutes,
+	}
+	if !candidate.CreatedAt.IsZero() {
+		c := candidate.CreatedAt
+		payload.CreatedAt = &c
+	}
+	score, err := s.scorer.Score(ctx, payload)
+	if err != nil {
+		slog.Warn("ml.score_failed", "error", err)
+		return fallback
+	}
+	return score
+}
+
+func normalizeTags(tags []string) []string {
+	if len(tags) == 0 {
+		return []string{}
+	}
+	out := make([]string, 0, len(tags))
+	seen := make(map[string]struct{}, len(tags))
+	for _, raw := range tags {
+		tag := strings.TrimSpace(strings.ToLower(raw))
+		if tag == "" {
+			continue
+		}
+		if len(tag) > 32 {
+			tag = tag[:32]
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		out = append(out, tag)
+	}
+	return out
+}
+
+func clampDuration(val int) int {
+	if val < 0 {
+		return 0
+	}
+	if val > 24*60 {
+		return 24 * 60
+	}
+	return val
+}

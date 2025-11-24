@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -60,9 +61,15 @@ func (s *Store) migrate() error {
 			id BIGSERIAL PRIMARY KEY,
 			title TEXT NOT NULL,
 			completed BOOLEAN NOT NULL DEFAULT FALSE,
+			tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+			duration_minutes INTEGER NOT NULL DEFAULT 0,
+			priority_score DOUBLE PRECISION NOT NULL DEFAULT 0,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);`,
+		`ALTER TABLE todos ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb;`,
+		`ALTER TABLE todos ADD COLUMN IF NOT EXISTS duration_minutes INTEGER NOT NULL DEFAULT 0;`,
+		`ALTER TABLE todos ADD COLUMN IF NOT EXISTS priority_score DOUBLE PRECISION NOT NULL DEFAULT 0;`,
 		`CREATE INDEX IF NOT EXISTS idx_todos_completed ON todos(completed);`,
 	}
 	for _, stmt := range stmts {
@@ -75,16 +82,28 @@ func (s *Store) migrate() error {
 
 // Todo represents a todo item.
 type Todo struct {
-	ID        int64     `json:"id"`
-	Title     string    `json:"title"`
-	Completed bool      `json:"completed"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID              int64     `json:"id"`
+	Title           string    `json:"title"`
+	Completed       bool      `json:"completed"`
+	Tags            []string  `json:"tags"`
+	DurationMinutes int       `json:"durationMinutes"`
+	PriorityScore   float64   `json:"priorityScore"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
+// SaveTodoInput represents the fields accepted for create/update operations.
+type SaveTodoInput struct {
+	Title           string
+	Completed       bool
+	Tags            []string
+	DurationMinutes int
+	PriorityScore   float64
 }
 
 // ListTodos returns all todos ordered by created_at ascending.
 func (s *Store) ListTodos(ctx context.Context) ([]Todo, error) {
-	rows, err := s.SQL.QueryContext(ctx, `SELECT id, title, completed, created_at, updated_at FROM todos ORDER BY created_at ASC`)
+	rows, err := s.SQL.QueryContext(ctx, `SELECT id, title, completed, tags, duration_minutes, priority_score, created_at, updated_at FROM todos ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -92,8 +111,8 @@ func (s *Store) ListTodos(ctx context.Context) ([]Todo, error) {
 
 	var out []Todo
 	for rows.Next() {
-		var t Todo
-		if err := rows.Scan(&t.ID, &t.Title, &t.Completed, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		t, err := scanTodo(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -104,21 +123,30 @@ func (s *Store) ListTodos(ctx context.Context) ([]Todo, error) {
 	return out, rows.Err()
 }
 
-// CreateTodo creates a new todo with the given title.
-func (s *Store) CreateTodo(ctx context.Context, title string) (Todo, error) {
-	if len(title) == 0 {
+// CreateTodo creates a new todo.
+func (s *Store) CreateTodo(ctx context.Context, input SaveTodoInput) (Todo, error) {
+	if len(input.Title) == 0 {
 		return Todo{}, errors.New("title must not be empty")
 	}
-	if len(title) > 200 {
+	if len(input.Title) > 200 {
 		return Todo{}, errors.New("title too long")
 	}
+	if input.DurationMinutes < 0 {
+		return Todo{}, errors.New("duration must be >= 0")
+	}
 
-	var t Todo
-	err := s.SQL.QueryRowContext(ctx,
-		`INSERT INTO todos (title, completed) VALUES ($1, FALSE)
-		 RETURNING id, title, completed, created_at, updated_at`,
-		title,
-	).Scan(&t.ID, &t.Title, &t.Completed, &t.CreatedAt, &t.UpdatedAt)
+	tagsJSON, err := encodeTags(input.Tags)
+	if err != nil {
+		return Todo{}, err
+	}
+
+	row := s.SQL.QueryRowContext(ctx,
+		`INSERT INTO todos (title, completed, tags, duration_minutes, priority_score)
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING id, title, completed, tags, duration_minutes, priority_score, created_at, updated_at`,
+		input.Title, input.Completed, tagsJSON, input.DurationMinutes, input.PriorityScore,
+	)
+	t, err := scanTodo(row)
 	if err != nil {
 		return Todo{}, err
 	}
@@ -126,23 +154,36 @@ func (s *Store) CreateTodo(ctx context.Context, title string) (Todo, error) {
 	return t, nil
 }
 
-// UpdateTodo updates title and completed fields for a todo by id.
-func (s *Store) UpdateTodo(ctx context.Context, id int64, title string, completed bool) (Todo, error) {
-	if len(title) == 0 {
+// UpdateTodo updates fields for a todo by id.
+func (s *Store) UpdateTodo(ctx context.Context, id int64, input SaveTodoInput) (Todo, error) {
+	if len(input.Title) == 0 {
 		return Todo{}, errors.New("title must not be empty")
 	}
-	if len(title) > 200 {
+	if len(input.Title) > 200 {
 		return Todo{}, errors.New("title too long")
 	}
+	if input.DurationMinutes < 0 {
+		return Todo{}, errors.New("duration must be >= 0")
+	}
 
-	var t Todo
-	err := s.SQL.QueryRowContext(ctx,
+	tagsJSON, err := encodeTags(input.Tags)
+	if err != nil {
+		return Todo{}, err
+	}
+
+	row := s.SQL.QueryRowContext(ctx,
 		`UPDATE todos
-		 SET title = $1, completed = $2, updated_at = NOW()
-		 WHERE id = $3
-		 RETURNING id, title, completed, created_at, updated_at`,
-		title, completed, id,
-	).Scan(&t.ID, &t.Title, &t.Completed, &t.CreatedAt, &t.UpdatedAt)
+		 SET title = $1,
+		     completed = $2,
+		     tags = $3,
+		     duration_minutes = $4,
+		     priority_score = $5,
+		     updated_at = NOW()
+		 WHERE id = $6
+		 RETURNING id, title, completed, tags, duration_minutes, priority_score, created_at, updated_at`,
+		input.Title, input.Completed, tagsJSON, input.DurationMinutes, input.PriorityScore, id,
+	)
+	t, err := scanTodo(row)
 	if err != nil {
 		return Todo{}, err
 	}
@@ -168,15 +209,56 @@ func (s *Store) DeleteTodo(ctx context.Context, id int64) error {
 
 // GetTodo returns a todo by id.
 func (s *Store) GetTodo(ctx context.Context, id int64) (Todo, error) {
-	var t Todo
 	row := s.SQL.QueryRowContext(ctx,
-		`SELECT id, title, completed, created_at, updated_at FROM todos WHERE id = $1`, id,
+		`SELECT id, title, completed, tags, duration_minutes, priority_score, created_at, updated_at FROM todos WHERE id = $1`, id,
 	)
-	if err := row.Scan(&t.ID, &t.Title, &t.Completed, &t.CreatedAt, &t.UpdatedAt); err != nil {
+	t, err := scanTodo(row)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Todo{}, sql.ErrNoRows
 		}
 		return Todo{}, err
 	}
+	if t.Tags == nil {
+		t.Tags = []string{}
+	}
 	return t, nil
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanTodo(row rowScanner) (Todo, error) {
+	var t Todo
+	var tagsRaw []byte
+	if err := row.Scan(
+		&t.ID,
+		&t.Title,
+		&t.Completed,
+		&tagsRaw,
+		&t.DurationMinutes,
+		&t.PriorityScore,
+		&t.CreatedAt,
+		&t.UpdatedAt,
+	); err != nil {
+		return Todo{}, err
+	}
+	if len(tagsRaw) == 0 {
+		t.Tags = []string{}
+	} else if err := json.Unmarshal(tagsRaw, &t.Tags); err != nil {
+		return Todo{}, fmt.Errorf("decode tags: %w", err)
+	}
+	return t, nil
+}
+
+func encodeTags(tags []string) ([]byte, error) {
+	if len(tags) == 0 {
+		return []byte("[]"), nil
+	}
+	data, err := json.Marshal(tags)
+	if err != nil {
+		return nil, fmt.Errorf("encode tags: %w", err)
+	}
+	return data, nil
 }

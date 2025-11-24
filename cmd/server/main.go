@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"todoapp/internal/db"
+	"todoapp/internal/mlclient"
 	"todoapp/internal/server"
 )
 
@@ -23,6 +24,7 @@ func main() {
 
 	port := getEnv("PORT", "8080")
 	dsn := getEnv("DATABASE_URL", "postgres://todo:todo@postgres:5432/tododb?sslmode=disable")
+	mlURL := getEnv("ML_SERVICE_URL", "http://ml:8081")
 
 	store, err := db.NewStore(dsn)
 	if err != nil {
@@ -33,7 +35,15 @@ func main() {
 		_ = store.Close()
 	}()
 
-	srv := server.NewServer(store, webFS)
+	var scorer *mlclient.Client
+	if mlURL != "" {
+		scorer = mlclient.NewClient(mlURL, 3*time.Second)
+		logger.Info("ml client configured", "url", mlURL)
+	} else {
+		logger.Warn("ml client disabled; ML_SERVICE_URL not set")
+	}
+
+	srv := server.NewServer(store, webFS, scorer)
 
 	httpSrv := &http.Server{
 		Addr:              ":" + port,
@@ -72,5 +82,3 @@ func getEnv(key, def string) string {
 	}
 	return def
 }
-
-

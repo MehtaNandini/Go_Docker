@@ -7,6 +7,7 @@ services:
     environment:
       - PORT=8080
       - DATABASE_URL=postgres://todo:todo@postgres:5432/tododb?sslmode=disable
+      - ML_SERVICE_URL=http://ml:8081
     ports:
       - "8080:8080"
     depends_on:
@@ -33,6 +34,24 @@ services:
       - PORT=8081
     ports:
       - "8081:8081"
+    restart: unless-stopped
+  mlflow:
+    build:
+      context: ./mlflow_server
+    image: todo-mlflow:latest
+    container_name: todo-mlflow
+    environment:
+      - MLFLOW_TRACKING_URI=http://0.0.0.0:5000
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri file:///mlflow
+      --default-artifact-root file:///mlflow/artifacts
+    volumes:
+      - ./mlruns:/mlflow
+    ports:
+      - "5500:5000"
     restart: unless-stopped
 
 volumes:

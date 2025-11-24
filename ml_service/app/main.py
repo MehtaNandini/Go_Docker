@@ -21,6 +21,7 @@ class TodoPayload(BaseModel):
     created_at: datetime | None = None
     due_date: datetime | None = None
     tags: List[str] = Field(default_factory=list, max_items=20)
+    duration_minutes: int = Field(default=0, ge=0, le=1440)
 
     @field_validator("tags", mode="before")
     @classmethod
@@ -67,6 +68,7 @@ def score(request: ScoreRequest) -> ScoreResponse:
             created_at=todo.created_at,
             due_date=todo.due_date,
             tags=todo.tags,
+            duration_minutes=todo.duration_minutes,
         )
         results.append(
             ScoreResult(
