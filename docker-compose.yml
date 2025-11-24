@@ -43,11 +43,12 @@ services:
     environment:
       - MLFLOW_TRACKING_URI=http://0.0.0.0:5000
     command: >
-      mlflow server
+      sh -c "mkdir -p /mlflow/artifacts && mlflow server
       --host 0.0.0.0
       --port 5000
       --backend-store-uri file:///mlflow
-      --default-artifact-root file:///mlflow/artifacts
+      --artifacts-destination /mlflow/artifacts
+      --serve-artifacts"
     volumes:
       - ./mlruns:/mlflow
     ports:
@@ -72,7 +73,6 @@ services:
       - ./airflow/logs:/opt/airflow/logs
       - ./airflow/plugins:/opt/airflow/plugins
       - ./ml_training:/opt/airflow/ml_training
-      - ./mlruns:/opt/airflow/mlruns
     entrypoint: /bin/bash
     command:
       - -c
@@ -114,6 +114,7 @@ services:
       - AIRFLOW__WEBSERVER__SECRET_KEY=airflow_secret_key_12345
       - AIRFLOW__WEBSERVER__EXPOSE_CONFIG=true
       - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MLFLOW_ARTIFACT_UPLOAD_DOWNLOAD_TIMEOUT=600
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_USER=todo
@@ -124,7 +125,6 @@ services:
       - ./airflow/logs:/opt/airflow/logs
       - ./airflow/plugins:/opt/airflow/plugins
       - ./ml_training:/opt/airflow/ml_training
-      - ./mlruns:/opt/airflow/mlruns
     ports:
       - "8082:8080"
     command: bash -c "pip install --no-cache-dir psycopg2-binary mlflow && airflow webserver"
@@ -149,6 +149,7 @@ services:
       - AIRFLOW__CORE__LOAD_EXAMPLES=false
       - AIRFLOW__WEBSERVER__SECRET_KEY=airflow_secret_key_12345
       - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MLFLOW_ARTIFACT_UPLOAD_DOWNLOAD_TIMEOUT=600
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_USER=todo
@@ -159,7 +160,6 @@ services:
       - ./airflow/logs:/opt/airflow/logs
       - ./airflow/plugins:/opt/airflow/plugins
       - ./ml_training:/opt/airflow/ml_training
-      - ./mlruns:/opt/airflow/mlruns
     command: bash -c "pip install --no-cache-dir psycopg2-binary mlflow && airflow scheduler"
     depends_on:
       - postgres-airflow

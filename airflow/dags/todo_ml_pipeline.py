@@ -15,7 +15,6 @@ import json
 import os
 import random
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import mlflow
@@ -282,15 +281,8 @@ def todo_ml_pipeline():
             mlflow.log_metric("avg_duration", statistics["avg_duration"])
             mlflow.log_metric("avg_priority", statistics["avg_priority"])
             
-            # Save and log artifacts
-            artifact_dir = Path("/opt/airflow/ml_training/tmp_artifacts")
-            artifact_dir.mkdir(parents=True, exist_ok=True)
-            
-            artifact_file = artifact_dir / "priority_rules.json"
-            with open(artifact_file, "w") as f:
-                json.dump(model_rules, f, indent=2, sort_keys=True)
-            
-            mlflow.log_artifact(str(artifact_file), artifact_path="model")
+            # Log model rules as parameter (avoids filesystem permission issues)
+            mlflow.log_param("model_rules_json", json.dumps(model_rules))
             
             # Log tags
             mlflow.set_tag("pipeline", "airflow")
