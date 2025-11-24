@@ -1,0 +1,8 @@
+{
+  "description": "Simple heuristic priority model for todo tasks.",
+  "weights": {
+    "duration_penalty": 0.1,
+    "keyword_bonus": 0.47,
+    "tag_bonus": 0.06
+  }
+}

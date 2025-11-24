@@ -1,0 +1,5 @@
+.venv/
+mlruns/
+ml_training/tmp_artifacts/
+*.pyc
+__pycache__/
