@@ -47,6 +47,13 @@ func (s *Server) Handler() http.Handler {
 	r.Use(requestLogger)
 	r.Use(s.securityHeaders)
 
+	// Health check endpoint for Kubernetes probes
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"healthy"}`))
+	})
+
 	r.Route("/api/todos", func(r chi.Router) {
 		r.Get("/", s.handleListTodos)
 		r.Post("/", s.handleCreateTodo)

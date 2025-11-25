@@ -1,0 +1,19 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: todo-cluster
+nodes:
+- role: control-plane
+  extraPortMappings:
+  # TODO API
+  - containerPort: 30080
+    hostPort: 30080
+    protocol: TCP
+  # Airflow UI
+  - containerPort: 30082
+    hostPort: 30082
+    protocol: TCP
+  # MLflow UI
+  - containerPort: 30500
+    hostPort: 30500
+    protocol: TCP
+

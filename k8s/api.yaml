@@ -1,0 +1,114 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+  namespace: todo-app
+data:
+  PORT: "8080"
+  DATABASE_URL: "postgres://todo:todo@postgres:5432/tododb?sslmode=disable"
+  ML_SERVICE_URL: "http://ml:8081"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: todo-api
+  namespace: todo-app
+  labels:
+    app: todo-api
+    component: api
+    part-of: todo-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: todo-api
+  template:
+    metadata:
+      labels:
+        app: todo-api
+        component: api
+        part-of: todo-app
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/health"
+    spec:
+      containers:
+      - name: todo-api
+        image: todoapp:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+          name: http
+        envFrom:
+        - configMapRef:
+            name: api-config
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "250m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: todo-api
+  namespace: todo-app
+  labels:
+    app: todo-api
+    component: api
+    part-of: todo-app
+spec:
+  type: ClusterIP
+  selector:
+    app: todo-api
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: todo-api-nodeport
+  namespace: todo-app
+  labels:
+    app: todo-api
+    component: api
+    part-of: todo-app
+spec:
+  type: NodePort
+  selector:
+    app: todo-api
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30080
+    name: http
+
